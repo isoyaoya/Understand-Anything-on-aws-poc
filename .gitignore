@@ -1,0 +1,8 @@
+node_modules/
+dist/
+cdk.out/
+cdk.context.json
+__pycache__/
+*.pyc
+.DS_Store
+*.lock

@@ -1,0 +1,5 @@
+{
+  "name": "@understand-anything/tree-sitter-dart-wasm",
+  "version": "0.1.0",
+  "main": "index.js"
+}

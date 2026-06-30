@@ -1,0 +1,19 @@
+# AgentCore Runtime configuration
+version: "1.0"
+
+agent:
+  name: "understand-anything"
+  description: "Code knowledge graph generator using multi-agent analysis"
+
+runtime:
+  port: 8080
+  health_check_path: /health
+
+auth:
+  type: cognito
+  user_pool_id: "${COGNITO_USER_POOL_ID}"
+  client_id: "${COGNITO_CLIENT_ID}"
+
+environment:
+  NEPTUNE_ENDPOINT: "${NEPTUNE_ENDPOINT}"
+  NEPTUNE_PORT: "8182"
