@@ -7,73 +7,69 @@ A cloud-hosted AI Agent service that analyzes GitHub repositories, builds knowle
 ## Infrastructure Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Frontend (CloudFront + S3)                                │
-│  ┌──────────────────┐  ┌───────────────────────┐  ┌─────────────────────┐  │
-│  │ React Dashboard   │  │ D3.js Knowledge Graph │  │ Chat Interface      │  │
-│  │ (Project List,    │  │ Visualization         │  │ (Natural Language   │  │
-│  │  Status, Actions) │  │ (Nodes, Edges, Layers)│  │  Q&A + Streaming)  │  │
-│  └──────────────────┘  └───────────────────────┘  └─────────────────────┘  │
-└───────────────────────────────┬─────────────────────────────────────────────┘
-                                │ JWT (Cognito ID token)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Amazon Cognito (User Pool + App Client)                   │
-│  Email/Password Sign-in │ Self-signup disabled │ JWT Issuance (RS256)        │
-└───────────────────────────────┬─────────────────────────────────────────────┘
-                                │ Authorization: Bearer <id_token> (CUSTOM_JWT)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Bedrock AgentCore Runtime (Streamable HTTP)               │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ main.py — Intent Router (Haiku classification → Sonnet execution)     │  │
-│  │                                                                       │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐             │  │
-│  │  │ analyze  │  │ neptune  │  │  query   │  │  delete  │             │  │
-│  │  │ Clone +  │  │ KG JSON →│  │ NL Q&A   │  │ Drop V/E │             │  │
-│  │  │ Parse +  │  │ Graph DB │  │ via Graph │  │ + S3 del │             │  │
-│  │  │ Sub-agent│  │ (write)  │  │ Traversal│  │          │             │  │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘             │  │
-│  │       │              │             │             │                    │  │
-│  └───────┼──────────────┼─────────────┼─────────────┼────────────────────┘  │
-│          │              │             │             │                        │
-│  ┌───────▼──────────────▼─────────────▼─────────────▼────────────────────┐  │
-│  │ Tools Layer                                                            │  │
-│  │  neptune_http.py       — SigV4-signed HTTP client for Neptune          │  │
-│  │  neptune_writer.py     — Write / Delete graph (batch addV + addE)      │  │
-│  │  neptune_mcp_server.py — MCP tool: query_neptune (predefined Gremlin)  │  │
-│  │  s3_manager.py         — Upload / Download / Delete / List projects    │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                             │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ Claude Agent SDK (via Amazon Bedrock)                                   │  │
-│  │  • Haiku — fast intent classification (analyze/neptune/query/delete)    │  │
-│  │  • Sonnet — complex reasoning (analysis, Q&A, sub-agent orchestration) │  │
-│  │  • 9 Sub-agents (.md prompts): architecture, file, dependency,         │  │
-│  │    security, documentation, test, tour-builder, graph-reviewer,        │  │
-│  │    project-scanner                                                     │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                             │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ Tree-sitter Skills (Node.js 22)                                        │  │
-│  │  parse-imports.js │ parse-structure.js │ parse-functions.js │ complexity│  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                             │
-│  /mnt/workspace — Session Storage (git clone target, persists in session)   │
-└──────────┬──────────────────────┬───────────────────────────────────────────┘
-           │ HTTP 8182            │ IAM Role (GetObject, PutObject,
-           │ (VPC internal)       │  DeleteObject, ListBucket)
-           ▼                      ▼
-┌────────────────────────┐  ┌─────────────────────────────────────────────────┐
-│ Neptune Serverless      │  │ S3 Knowledge Graphs Bucket                      │
-│ (Gremlin API, 1-4 NCU) │  │                                                 │
-│                         │  │  {project_id}/knowledge-graph.json              │
-│ • Private subnet only   │  │  projects.json (index)                          │
-│ • SG: TCP 8182 from VPC │  │                                                 │
-│ • Multi-tenant by       │  │  CloudFront /graphs/* origin (OAI read-only)    │
-│   project_id property   │  │                                                 │
-└─────────────────────────┘  └─────────────────────────────────────────────────┘
+┌─ Frontend (CloudFront + S3) ─────────────────────────┐          ┌─ S3 Knowledge Graphs Bucket ──┐
+│                                                       │          │                               │
+│  ┌──────────────┐ ┌───────────────┐ ┌────────────┐  │          │  {project_id}/                │
+│  │ React        │ │ D3.js Graph   │ │ Chat       │  │  OAI     │    knowledge-graph.json       │
+│  │ Dashboard    │ │ Visualization │ │ Interface  │  │─────────▶│  projects.json (index)        │
+│  └──────────────┘ └───────────────┘ └────────────┘  │(read-only)│                               │
+│                                                       │          │                               │
+└───────────────────────────┬───────────────────────────┘          │                               │
+                            │ JWT (Cognito ID token)               │                               │
+                            ▼                                      │                               │
+┌─ Amazon Cognito ──────────────────────────────────────┐          │                               │
+│  User Pool + App Client                               │          │                               │
+│  Email/Password │ Self-signup disabled │ JWT (RS256)  │          │                               │
+└───────────────────────────┬───────────────────────────┘          │                               │
+                            │ Bearer <id_token> (CUSTOM_JWT)       │                               │
+                            ▼                                      │                               │
+┌─ VPC (2 AZ: us-east-1b, us-east-1c) ─────────────────┐          │                               │
+│                                                        │          │                               │
+│  ┌─ Public Subnets ────────────────────────────────┐  │          │                               │
+│  │  NAT Gateway → Outbound Internet                │  │          │                               │
+│  │  (Bedrock API, git clone, ECR pull)             │  │          │                               │
+│  └──────────────────────┬──────────────────────────┘  │          │                               │
+│                         │                              │          │                               │
+│  ┌──────────────────────▼──────────────────────────┐  │  IAM     │                               │
+│  │ Private Subnets (NAT Egress)                     │  │  Role    │                               │
+│  │                                                  │  │(r/w)    │                               │
+│  │  ┌─ AgentCore Runtime (Streamable HTTP) ──────┐  │  │          │                               │
+│  │  │  SG: all outbound                          │  │──┼─────────▶│                               │
+│  │  │                                            │  │  │          │                               │
+│  │  │  Intent Router (Haiku → Sonnet)            │  │  │          └───────────────────────────────┘
+│  │  │   analyze │ neptune │ query │ delete       │  │  │
+│  │  │                                            │  │  │
+│  │  │  Tools Layer                               │  │  │
+│  │  │   neptune_http.py (SigV4 HTTP client)      │  │  │
+│  │  │   neptune_writer.py (batch addV + addE)    │  │  │
+│  │  │   neptune_mcp_server.py (query_neptune)    │  │  │
+│  │  │   s3_manager.py (Upload/Download/Delete)   │  │  │
+│  │  │                                            │  │  │
+│  │  │  Claude Agent SDK (via Amazon Bedrock)     │  │  │
+│  │  │   • Haiku — fast intent classification    │  │  │
+│  │  │   • Sonnet — complex reasoning            │  │  │
+│  │  │   • 9 Sub-agents (.md prompts)            │  │  │
+│  │  │                                            │  │  │
+│  │  │  Tree-sitter Skills (Node.js 22)           │  │  │
+│  │  │   parse-imports │ parse-structure │ complex │  │  │
+│  │  │                                            │  │  │
+│  │  │  ┌──────────────────────────────────────┐  │  │  │
+│  │  │  │ Session Storage (/mnt/workspace)     │  │  │  │
+│  │  │  │ Git clone target, persists in session│  │  │  │
+│  │  │  └──────────────────────────────────────┘  │  │  │
+│  │  │                                            │  │  │
+│  │  └─────────────────────┬──────────────────────┘  │  │
+│  │                        │ HTTP 8182               │  │
+│  │                        ▼                         │  │
+│  │  ┌────────────────────────────────────────────┐  │  │
+│  │  │ Neptune Serverless (Gremlin API, 1-4 NCU)  │  │  │
+│  │  │  • SG: TCP 8182 from VPC CIDR only        │  │  │
+│  │  │  • Multi-tenant by project_id property    │  │  │
+│  │  └────────────────────────────────────────────┘  │  │
+│  │                                                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Auth Chain
@@ -84,33 +80,6 @@ Browser → Cognito (email/password) → ID token (JWT)
      ├─ Bedrock API  → IAM Role (InvokeModel, InvokeModelWithResponseStream)
      ├─ Neptune      → VPC + Security Group (port 8182, CIDR only)
      └─ S3           → IAM Role (scoped to single bucket)
-```
-
-## VPC Network Topology
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ VPC (2 Availability Zones: us-east-1b, us-east-1c)                  │
-│                                                                      │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │ Public Subnets                                                 │  │
-│  │                                                                │  │
-│  │  ┌─────────────────┐                                          │  │
-│  │  │  NAT Gateway     │──── Outbound Internet                   │  │
-│  │  └─────────┬────────┘     (Bedrock API, git clone, ECR pull)  │  │
-│  └────────────┼──────────────────────────────────────────────────┘  │
-│               │                                                      │
-│  ┌────────────▼──────────────────────────────────────────────────┐  │
-│  │ Private Subnets (NAT Egress)                                   │  │
-│  │                                                                │  │
-│  │  ┌──────────────────────────┐    ┌─────────────────────────┐  │  │
-│  │  │  AgentCore Runtime        │    │  Neptune Serverless      │  │  │
-│  │  │  (Container)              │───▶│  (Graph DB, 1-4 NCU)    │  │  │
-│  │  │                           │8182│                          │  │  │
-│  │  │  SG: all outbound         │    │  SG: TCP 8182 from VPC  │  │  │
-│  │  └──────────────────────────┘    └─────────────────────────┘  │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## AgentCore Container Internals
@@ -125,7 +94,7 @@ Browser → Cognito (email/password) → ID token (JWT)
 │  │  Intent Router:                                                    │  │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐             │  │
 │  │  │ analyze  │ │ neptune  │ │  query   │ │  delete  │             │  │
-│  │  │(GitHub→KG)│ │(KG→Graph)│ │(Q&A)    │ │(清除数据) │             │  │
+│  │  │(GitHub→KG)│ │(KG→Graph)│ │(Q&A)    │ │(cleanup) │             │  │
 │  │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘             │  │
 │  └───────┼─────────────┼────────────┼────────────┼────────────────────┘  │
 │          │             │            │            │                        │
